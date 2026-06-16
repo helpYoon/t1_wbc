@@ -37,3 +37,40 @@ def test_slew_limit_caps_delta():
     tau = np.array([200.0, -5.0])
     out = slew_limit(tau, prev, max_delta=10.0)
     np.testing.assert_allclose(out, [10.0, -5.0])   # first capped to +10, second within
+
+from t1_wbc.safety import SafetyLayer
+from t1_wbc.transport import LowCmd
+
+def _sl(model, cfg, maps):
+    return SafetyLayer(model, cfg, maps)
+
+def test_hold_when_infeasible_zeros_tau_ff():
+    model, _ = load_t1_model(); maps = build_index_maps(model); cfg = WBCConfig()
+    sl = _sl(model, cfg, maps); hold_q = np.zeros(model.nu); sl.begin(hold_q)
+    raw = LowCmd(q_des=np.ones(model.nu), qd_des=np.zeros(model.nu),
+                 kp=np.zeros(model.nu), kd=np.zeros(model.nu), tau_ff=np.full(model.nu, 50.0))
+    out = sl.wrap(raw, ok=False, t=10.0, lowstate_age=0.0)   # past ramp, but infeasible
+    np.testing.assert_allclose(out.tau_ff, 0.0)               # hold: no feedforward torque
+    np.testing.assert_allclose(out.q_des, hold_q)             # PD to the hold pose
+    assert np.all(out.kp > 0)                                 # servo gains engaged
+
+def test_watchdog_stale_state_holds():
+    model, _ = load_t1_model(); maps = build_index_maps(model); cfg = WBCConfig()
+    sl = _sl(model, cfg, maps); sl.begin(np.zeros(model.nu))
+    raw = LowCmd(q_des=np.ones(model.nu), qd_des=np.zeros(model.nu),
+                 kp=np.zeros(model.nu), kd=np.zeros(model.nu), tau_ff=np.full(model.nu, 50.0))
+    out = sl.wrap(raw, ok=True, t=10.0, lowstate_age=0.2)     # stale beyond watchdog_timeout_s
+    np.testing.assert_allclose(out.tau_ff, 0.0)
+
+def test_weight_ramp_blends_in_tau_ff():
+    model, _ = load_t1_model(); maps = build_index_maps(model)
+    cfg = WBCConfig(ramp_seconds=2.0)
+    sl = _sl(model, cfg, maps); sl.begin(np.zeros(model.nu))
+    # tau_ff=5.0 stays within every actuator limit (min |limit| is 7 Nm) so the clamp
+    # does not bind and the test exercises only the ramp blend + slew, not the clamp.
+    raw = LowCmd(q_des=np.zeros(model.nu), qd_des=np.zeros(model.nu),
+                 kp=np.zeros(model.nu), kd=np.zeros(model.nu), tau_ff=np.full(model.nu, 5.0))
+    half = sl.wrap(raw, ok=True, t=1.0, lowstate_age=0.0)     # 50% through the ramp
+    assert np.all(half.tau_ff < raw.tau_ff) and np.all(half.tau_ff > 0)
+    full = sl.wrap(raw, ok=True, t=5.0, lowstate_age=0.0)     # past ramp
+    np.testing.assert_allclose(full.tau_ff, raw.tau_ff)
