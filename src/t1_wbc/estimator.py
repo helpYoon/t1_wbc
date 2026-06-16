@@ -17,7 +17,12 @@ class StateEstimator:
         self.base_body = index_maps["base_body_id"]
         self.foot_L = index_maps["feet"]["left"]["body_id"]
         self.foot_R = index_maps["feet"]["right"]["body_id"]
-        self.sole_local = np.asarray(index_maps["feet"]["left"]["sole_local"], dtype=np.float64)
+        # sole point in the foot frame. index_maps stores the foot collision-box
+        # *center* (geom_pos); the actual sole is the box bottom face, so drop it by
+        # the box half-height (geom_size[2]) to pin the true contact surface to ground.
+        _foot_box = self._foot_contact_box_id(self.foot_L)
+        self.sole_local = np.asarray(index_maps["feet"]["left"]["sole_local"], dtype=np.float64).copy()
+        self.sole_local[2] -= float(model.geom_size[_foot_box, 2])
         # state
         self._yaw0 = None
         self._quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0])
@@ -45,3 +50,37 @@ class StateEstimator:
 
     def ang_vel(self):
         return self._gyro.copy()
+
+    def _foot_contact_box_id(self, foot_body_id):
+        m = self.model
+        g0, gn = m.body_geomadr[foot_body_id], m.body_geomnum[foot_body_id]
+        return next(g for g in range(g0, g0 + gn)
+                    if m.geom_contype[g] != 0
+                    and m.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX)
+
+    def _foot_world_z(self, base_xyz, quat_xyzw, joint_q):
+        d = self._scratch
+        d.qpos[0:3] = base_xyz
+        d.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]  # xyzw->wxyz
+        d.qpos[7:7 + self.nu] = joint_q
+        mujoco.mj_kinematics(self.model, d)
+        zl = (d.xpos[self.foot_L] + d.xmat[self.foot_L].reshape(3, 3) @ self.sole_local)[2]
+        zr = (d.xpos[self.foot_R] + d.xmat[self.foot_R].reshape(3, 3) @ self.sole_local)[2]
+        return float(zl), float(zr)
+
+    def update_base_pose_and_contacts(self, joint_q):
+        joint_q = np.asarray(joint_q, dtype=np.float64)
+        # base z: FK with base at origin, then drop so the lower foot sits at world z=0
+        zl0, zr0 = self._foot_world_z([0.0, 0.0, 0.0], self._quat_xyzw, joint_q)
+        base_z = -min(zl0, zr0)
+        self._pos[2] = base_z
+        # contact flags: foot world-z (with base at the recovered height) near ground
+        zl = zl0 + base_z; zr = zr0 + base_z
+        self._contacts = np.array([zl < self.contact_threshold_m,
+                                   zr < self.contact_threshold_m])
+
+    def position(self):
+        return self._pos.copy()
+
+    def contact_flags(self):
+        return self._contacts.copy()
