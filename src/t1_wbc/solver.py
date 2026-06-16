@@ -1,26 +1,56 @@
-"""WBC QP solver backends. proxsuite (B=1 exact)."""
-from abc import ABC, abstractmethod
-import numpy as np, torch
+"""WBC QP data + solver — proxsuite (dense, exact, warm-started). numpy-native."""
+from dataclasses import dataclass
+import numpy as np
+from proxsuite import proxqp
 
-class SolverBackend(ABC):
-    @abstractmethod
-    def solve(self, qp):  # -> (z (B,nz), converged (B,) bool)
-        ...
 
-class ProxsuiteBackend(SolverBackend):
-    """B=1 exact. Maps one-sided G z <= b into proxsuite (lb=-inf, ub=b)."""
+@dataclass
+class BatchedQP:
+    """Single-robot QP data (numpy). Name kept for continuity; B=1, no batch dim.
+    min 1/2 z'Hz + g'z  s.t.  A_eq z = b_eq,  G z <= b."""
+    H: np.ndarray; g: np.ndarray          # (nz,nz),(nz,)
+    A_eq: np.ndarray; b_eq: np.ndarray    # (neq,nz),(neq,)
+    G: np.ndarray; b: np.ndarray          # (nineq,nz),(nineq,)
+
+
+def external_residual(z, A_eq, b_eq, G, b):
+    """(max |A_eq z - b_eq|, max(G z - b, 0)) — the trusted feasibility check."""
+    eq = float(np.max(np.abs(A_eq @ z - b_eq))) if A_eq.shape[0] else 0.0
+    viol = float(np.max(np.maximum(G @ z - b, 0.0))) if G.shape[0] else 0.0
+    return eq, viol
+
+
+class ProxsuiteSolver:
+    """Persistent dense proxsuite QP, warm-started across ticks.
+    Solves  min 1/2 z'Hz + g'z  s.t.  A_eq z = b_eq,  -inf <= G z <= b."""
+    def __init__(self, feas_tol: float = 1e-4):
+        self.feas_tol = feas_tol
+        self._qp = None
+        self._dims = None
+
     def solve(self, qp):
-        from proxsuite import proxqp
-        assert qp.H.shape[0] == 1, "ProxsuiteBackend is B=1 only"
-        npd = lambda t: t[0].detach().cpu().numpy().astype(np.float64)
-        H, g, A, beq, G, b = map(npd, (qp.H, qp.g, qp.A_eq, qp.b_eq, qp.G, qp.b))
-        n, n_eq, n_in = H.shape[0], A.shape[0], G.shape[0]
-        q = proxqp.dense.QP(n, n_eq, n_in)
-        lo = np.full(n_in, -1e20); q.init(H, g, A, beq, G, lo, b)
-        q.solve()
-        z = torch.as_tensor(np.asarray(q.results.x), dtype=qp.H.dtype, device=qp.H.device).unsqueeze(0)
-        ok = torch.tensor([str(q.results.info.status) == "QPSolverOutput.PROXQP_SOLVED"], device=qp.H.device)
+        H = np.ascontiguousarray(qp.H, dtype=np.float64)
+        g = np.ascontiguousarray(qp.g, dtype=np.float64)
+        A = np.ascontiguousarray(qp.A_eq, dtype=np.float64)
+        beq = np.ascontiguousarray(qp.b_eq, dtype=np.float64)
+        G = np.ascontiguousarray(qp.G, dtype=np.float64)
+        b = np.ascontiguousarray(qp.b, dtype=np.float64)
+        n = H.shape[0]; n_eq = A.shape[0]; n_in = G.shape[0]
+        lo = np.full(n_in, -1e20)
+        dims = (n, n_eq, n_in)
+        if self._qp is None or self._dims != dims:
+            self._qp = proxqp.dense.QP(n, n_eq, n_in)
+            self._qp.settings.eps_abs = 1e-9  # tighten so |residual| < feas_tol on warm-start
+            self._qp.init(H, g, A, beq, G, lo, b)
+            self._dims = dims
+        else:
+            self._qp.update(H=H, g=g, A=A, b=beq, C=G, l=lo, u=b)
+        self._qp.solve()
+        z = np.asarray(self._qp.results.x, dtype=np.float64)
+        eq, viol = external_residual(z, A, beq, G, b)
+        ok = (eq < self.feas_tol) and (viol < self.feas_tol)
         return z, ok
 
-def make_solver(cfg):
-    return ProxsuiteBackend()
+
+def make_solver(cfg=None):
+    return ProxsuiteSolver()
