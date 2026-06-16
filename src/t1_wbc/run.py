@@ -74,9 +74,37 @@ def run_track(cfg, seconds=None, viewer=False, log=None):
                 lh_rms=float(np.mean(lh)), rh_rms=float(np.mean(rh)))
 
 
+def run_track_estimated(cfg, seconds=None, log=None):
+    """Settle, then track the motion with the WBC running on ESTIMATED base state
+    (IMU+odom+encoders via SimTransport + StateEstimator). Returns a summary dict."""
+    from .transport import SimTransport, LowCmd
+    from .estimator import StateEstimator
+    model, data = load_t1_model(cfg.xml)
+    ctrl = WBController(model, cfg); ctrl.reset(data); ncon = ctrl.settle(data)
+    maps = build_index_maps(model)
+    ctrl.attach_reference(ReferenceTrajectory(model, maps, ctrl.q_home, cfg, 0.0, 0.0, 0.0))
+    ctrl.attach_estimator(StateEstimator(model, maps))
+    tr = SimTransport(model, data)
+    horizon = ctrl.ref.duration if seconds is None else seconds
+    dt = model.opt.timestep; t = 0.0; infeas = 0; zmin = 1e9; lh = []; rh = []
+    last = None
+    for i in range(int(horizon / dt)):
+        mujoco.mj_step1(model, data)
+        if i % cfg.control_decimation == 0:
+            cmd, diag = ctrl.step_track_estimated(tr.read_lowstate(), t)
+            last = cmd
+            infeas += int(not diag["ok"]); zmin = min(zmin, float(data.qpos[2]))
+            lh.append(diag["lh_err"]); rh.append(diag["rh_err"])
+        tr.write_lowcmd(LowCmd(q_des=last.q_des, qd_des=last.qd_des, kp=last.kp, kd=last.kd, tau_ff=last.tau_ff))
+        mujoco.mj_step2(model, data)
+        t += dt
+    return dict(ncon=ncon, infeasible=infeas, min_base_z=zmin, upright=zmin > cfg.upright_z,
+                lh_rms=float(np.mean(lh)), rh_rms=float(np.mean(rh)))
+
+
 def main():
     p = argparse.ArgumentParser(description="T1 whole-body QP controller")
-    p.add_argument("--mode", choices=["balance", "track"], default="track")
+    p.add_argument("--mode", choices=["balance", "track", "track-est"], default="track")
     p.add_argument("--seconds", type=float, default=None)
     p.add_argument("--time-scale", type=float, default=None)
     p.add_argument("--control-decimation", type=int, default=None)
@@ -94,6 +122,8 @@ def main():
         cfg.friction_ff = False  # disable the Coulomb friction feedforward term
     if args.mode == "balance":
         print(run_balance(cfg, args.seconds or 3.0))
+    elif args.mode == "track-est":
+        print(run_track_estimated(cfg, args.seconds, log=args.log))
     else:
         print(run_track(cfg, args.seconds, viewer=args.viewer, log=args.log))
 

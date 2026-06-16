@@ -101,3 +101,17 @@ class WBController:
         return cmd, dict(ok=bool(ok), base_z=float(data.qpos[2]),
                          min_fz=float(min(z[self.nv+2], z[self.nv+8])),
                          max_tau=float(np.abs(tau_ff).max()), lh_err=lh_err, rh_err=rh_err)
+
+    def step_track_estimated(self, lowstate, t):
+        assert self.ref is not None and self.est is not None
+        self._t_est = t
+        d = self._assemble_est_dynamics(lowstate)
+        q_act = np.asarray(lowstate.joint_q, dtype=np.float64)
+        qd_act = np.asarray(lowstate.joint_dq, dtype=np.float64)
+        rs = self.ref.sample(t)
+        tg = tracking_targets_from_refsample(rs, q_act, qd_act, self.q_home)
+        cmd, z, ok, tau_ff = self._solve_to_cmd(d, tg, q_act, qd_act)
+        lh_err = float(np.linalg.norm(d["hand_L_world"] - tg.lh_pos))
+        rh_err = float(np.linalg.norm(d["hand_R_world"] - tg.rh_pos))
+        return cmd, dict(ok=bool(ok), base_z=float(self.est.position()[2]),
+                         max_tau=float(np.abs(tau_ff).max()), lh_err=lh_err, rh_err=rh_err)
