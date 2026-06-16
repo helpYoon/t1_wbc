@@ -2,8 +2,10 @@
 import mujoco
 import numpy as np
 
-T1_XML = ("/home/yoonwoo/humanoid_mpc_ws/src/t1_controller/robot_models/"
-          "booster_t1/t1_description/urdf/t1.xml")
+from ._assets import asset
+
+# Self-contained: the MJCF ships inside the package (see config.py / _assets.py).
+T1_XML = asset("robot", "t1.xml")
 
 
 def load_t1_model(xml=T1_XML):
