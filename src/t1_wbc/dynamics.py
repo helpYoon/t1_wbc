@@ -5,7 +5,6 @@ data.qM / qfrc_bias / qfrc_passive / xpos / xmat / subtree_com are current.
 """
 import numpy as np
 import mujoco
-import torch
 
 
 def make_handles(model, index_maps):
@@ -63,19 +62,13 @@ def extract_dynamics(model, data, handles):
 
 
 class CpuDynamics:
-    """B=1 dynamics: the validated plain-MuJoCo extraction wrapped as a (1,…) torch dict (f64)."""
-    def __init__(self, model, index_maps, dtype=torch.float64):
-        self.model = model; self.handles = make_handles(model, index_maps); self.dtype = dtype
-        self._adof = torch.as_tensor(self.handles["actuated_dof"], dtype=torch.long)
+    """B=1 dynamics: the validated plain-MuJoCo extraction returned as a numpy dict (f64)."""
+    def __init__(self, model, index_maps):
+        self.model = model; self.handles = make_handles(model, index_maps)
 
     def extract(self, data):
-        raw = extract_dynamics(self.model, data, self.handles)  # existing numpy dict
-        t = lambda a: torch.as_tensor(a, dtype=self.dtype).unsqueeze(0)
-        out = {k: t(raw[k]) for k in ("M", "h", "Jfoot_L", "Jfoot_R", "foot_L_world",
-               "foot_R_world", "Jcom", "com", "Jhand_L", "Jhand_R", "hand_L_world",
-               "hand_R_world", "hand_L_quat_xyzw", "hand_R_quat_xyzw", "base_quat_xyzw")}
-        out["qvel"] = torch.as_tensor(data.qvel.copy(), dtype=self.dtype).unsqueeze(0)
-        out["tau_fric_coeff"] = torch.as_tensor(raw["tau_fric_coeff"], dtype=self.dtype).unsqueeze(0)
-        out["actuated_dof"] = self._adof
-        out["x_half"] = self.handles["x_half"]; out["y_half"] = self.handles["y_half"]
-        return out
+        raw = extract_dynamics(self.model, data, self.handles)   # numpy dict
+        raw["qvel"] = data.qvel.copy()
+        raw["x_half"] = self.handles["x_half"]
+        raw["y_half"] = self.handles["y_half"]
+        return raw
