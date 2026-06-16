@@ -1,7 +1,7 @@
 """Hardware safety layer: per-joint clamps, torque slew limiting, weight-ramp,
 watchdog, and infeasible->hold gating. Pure numpy; transport-agnostic."""
 import numpy as np
-from .config import servo_gains_for
+from .config import servo_gains_for, effective_ctrlrange
 from .transport import LowCmd
 
 
@@ -21,7 +21,7 @@ class SafetyLayer:
         self.cfg = cfg
         self.nu = model.nu
         self.servo_kp, self.servo_kd = servo_gains_for(index_maps)
-        cr = np.asarray(model.actuator_ctrlrange, dtype=np.float64) * cfg.torque_limit_scale
+        cr = effective_ctrlrange(model, cfg)   # scaled, no PD margin (clamps the final tau_ff)
         self.tau_lo = cr[:, 0]; self.tau_hi = cr[:, 1]
         self._prev_tau = np.zeros(self.nu)
         self._hold_q = np.zeros(self.nu)
@@ -33,7 +33,7 @@ class SafetyLayer:
         self._prev_tau = np.zeros(self.nu)
 
     def wrap(self, raw, ok, t, lowstate_age):
-        safe = (ok) and (lowstate_age <= self.cfg.watchdog_timeout_s)
+        safe = ok and lowstate_age <= self.cfg.watchdog_timeout_s
         if not safe:                                   # hold: PD to hold pose, no feedforward
             q_des, qd_des, tau_ff = self._hold_q.copy(), np.zeros(self.nu), np.zeros(self.nu)
         else:

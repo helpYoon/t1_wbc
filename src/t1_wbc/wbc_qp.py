@@ -20,6 +20,15 @@ def ori_error_world(q_des_xyzw, q_cur_xyzw):
     return np.array([ex*scale, ey*scale, ez*scale])
 
 
+def _tau_fric(dyn, cfg):
+    """Coulomb friction feedforward tau_fric = coeff * tanh(qvel/eps) (or zeros if disabled).
+    Shared by the QP torque-limit rows and torque recovery so the bound the QP enforces and the
+    torque it reports use the identical friction model."""
+    if not cfg.friction_ff:
+        return np.zeros_like(dyn["qvel"])
+    return dyn["tau_fric_coeff"] * np.tanh(dyn["qvel"] / cfg.fric_eps)
+
+
 def _contact_transpose(dyn, nv):
     JcT = np.zeros((nv, 12), dtype=np.float64)
     JcT[:, 0:6] = dyn["Jfoot_L"].T
@@ -61,8 +70,7 @@ def assemble_wbc_qp(dyn, targets, cfg, ctrlrange, nv, nu):
     A_feet[0:6, :nv] = dyn["Jfoot_L"]; A_feet[6:12, :nv] = dyn["Jfoot_R"]
     A_eq = np.concatenate([A_base, A_feet], axis=0)
     b_eq = np.concatenate([-dyn["h"][:6], np.zeros(12, dtype=np.float64)], axis=0)
-    tau_fric = (dyn["tau_fric_coeff"] * np.tanh(dyn["qvel"] / cfg.fric_eps)
-                if cfg.friction_ff else np.zeros_like(dyn["qvel"]))
+    tau_fric = _tau_fric(dyn, cfg)
     Gc, bc = _finite_contact_rows(nz, nv, cfg.mu, dyn["x_half"], dyn["y_half"], cfg.fz_min)
     Gt, bt = _torque_rows(dyn, ctrlrange, nz, nv, JcT, tau_fric)
     G = np.concatenate([Gc, Gt], axis=0); b = np.concatenate([bc, bt], axis=0)
@@ -124,6 +132,5 @@ def assemble_wbc_qp(dyn, targets, cfg, ctrlrange, nv, nu):
 
 def recover_tau(z, dyn, cfg, nv):
     adof = np.asarray(dyn["actuated_dof"]); JcT = _contact_transpose(dyn, nv)
-    tau_fric = (dyn["tau_fric_coeff"] * np.tanh(dyn["qvel"] / cfg.fric_eps)
-                if cfg.friction_ff else np.zeros_like(dyn["qvel"]))
+    tau_fric = _tau_fric(dyn, cfg)
     return (dyn["M"] @ z[:nv] + dyn["h"] + tau_fric - JcT @ z[nv:])[adof]

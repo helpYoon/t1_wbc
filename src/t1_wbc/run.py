@@ -74,10 +74,12 @@ def run_track(cfg, seconds=None, viewer=False, log=None):
                 lh_rms=float(np.mean(lh)), rh_rms=float(np.mean(rh)))
 
 
-def run_track_estimated(cfg, seconds=None, log=None):
-    """Settle, then track the motion with the WBC running on ESTIMATED base state
-    (IMU+odom+encoders via SimTransport + StateEstimator). Returns a summary dict."""
-    from .transport import SimTransport, LowCmd
+def _run_estimated(cfg, seconds, with_safety):
+    """Settle, then track the motion with the WBC on ESTIMATED base state (IMU+odom+encoders
+    via SimTransport + StateEstimator). With `with_safety`, the command is routed through the
+    SafetyLayer (servo gains, weight-ramp, clamps, slew, infeasible->hold) — the on-robot
+    command path, run in sim. Returns a summary dict."""
+    from .transport import SimTransport
     from .estimator import StateEstimator
     model, data = load_t1_model(cfg.xml)
     ctrl = WBController(model, cfg); ctrl.reset(data); ncon = ctrl.settle(data)
@@ -85,44 +87,17 @@ def run_track_estimated(cfg, seconds=None, log=None):
     ctrl.attach_reference(ReferenceTrajectory(model, maps, ctrl.q_home, cfg, 0.0, 0.0, 0.0))
     ctrl.attach_estimator(StateEstimator(model, maps))
     tr = SimTransport(model, data)
-    horizon = ctrl.ref.duration if seconds is None else seconds
-    dt = model.opt.timestep; t = 0.0; infeas = 0; zmin = 1e9; lh = []; rh = []
-    last = None
-    for i in range(int(horizon / dt)):
-        mujoco.mj_step1(model, data)
-        if i % cfg.control_decimation == 0:
-            cmd, diag = ctrl.step_track_estimated(tr.read_lowstate(), t)
-            last = cmd
-            infeas += int(not diag["ok"]); zmin = min(zmin, float(data.qpos[2]))
-            lh.append(diag["lh_err"]); rh.append(diag["rh_err"])
-        tr.write_lowcmd(LowCmd(q_des=last.q_des, qd_des=last.qd_des, kp=last.kp, kd=last.kd, tau_ff=last.tau_ff))
-        mujoco.mj_step2(model, data)
-        t += dt
-    return dict(ncon=ncon, infeasible=infeas, min_base_z=zmin, upright=zmin > cfg.upright_z,
-                lh_rms=float(np.mean(lh)), rh_rms=float(np.mean(rh)))
-
-
-def run_track_estimated_safe(cfg, seconds=None, log=None):
-    """Estimated-state track loop wrapped by the SafetyLayer (servo gains, weight-ramp,
-    clamps, slew, infeasible->hold) — the on-robot command path, run in sim."""
-    from .transport import SimTransport, LowCmd
-    from .estimator import StateEstimator
-    from .safety import SafetyLayer
-    model, data = load_t1_model(cfg.xml)
-    ctrl = WBController(model, cfg); ctrl.reset(data); ncon = ctrl.settle(data)
-    maps = build_index_maps(model)
-    ctrl.attach_reference(ReferenceTrajectory(model, maps, ctrl.q_home, cfg, 0.0, 0.0, 0.0))
-    ctrl.attach_estimator(StateEstimator(model, maps))
-    tr = SimTransport(model, data)
-    safety = SafetyLayer(model, cfg, maps); safety.begin(ctrl.q_home)
+    safety = None
+    if with_safety:
+        from .safety import SafetyLayer
+        safety = SafetyLayer(model, cfg, maps); safety.begin(ctrl.q_home)
     horizon = ctrl.ref.duration if seconds is None else seconds
     dt = model.opt.timestep; t = 0.0; infeas = 0; zmin = 1e9; lh = []; rh = []; last = None
     for i in range(int(horizon / dt)):
         mujoco.mj_step1(model, data)
         if i % cfg.control_decimation == 0:
             cmd, diag = ctrl.step_track_estimated(tr.read_lowstate(), t)
-            raw = LowCmd(q_des=cmd.q_des, qd_des=cmd.qd_des, kp=cmd.kp, kd=cmd.kd, tau_ff=cmd.tau_ff)
-            last = safety.wrap(raw, ok=diag["ok"], t=t, lowstate_age=0.0)
+            last = safety.wrap(cmd, ok=diag["ok"], t=t, lowstate_age=0.0) if safety else cmd
             infeas += int(not diag["ok"]); zmin = min(zmin, float(data.qpos[2]))
             lh.append(diag["lh_err"]); rh.append(diag["rh_err"])
         tr.write_lowcmd(last)
@@ -132,25 +107,32 @@ def run_track_estimated_safe(cfg, seconds=None, log=None):
                 lh_rms=float(np.mean(lh)), rh_rms=float(np.mean(rh)))
 
 
+def run_track_estimated(cfg, seconds=None):
+    """Track the motion on ESTIMATED base state (no safety layer)."""
+    return _run_estimated(cfg, seconds, with_safety=False)
+
+
+def run_track_estimated_safe(cfg, seconds=None):
+    """Estimated-state track loop wrapped by the SafetyLayer (the on-robot path, in sim)."""
+    return _run_estimated(cfg, seconds, with_safety=True)
+
+
 def run_hw_loop(cfg, model, data, maps, transport, ticks=None):
     """The hardware control loop: read LowState -> estimate+WBC -> SafetyLayer -> write LowCmd.
     Transport-agnostic (real SdkTransport on robot; mock in tests). Returns commands written.
     `data` is only used to settle / seed q_home."""
     from .estimator import StateEstimator
     from .safety import SafetyLayer
-    from .transport import LowCmd
     ctrl = WBController(model, cfg); ctrl.reset(data); ctrl.settle(data)
     ctrl.attach_reference(ReferenceTrajectory(model, maps, ctrl.q_home, cfg, 0.0, 0.0, 0.0))
     ctrl.attach_estimator(StateEstimator(model, maps))
     safety = SafetyLayer(model, cfg, maps); safety.begin(ctrl.q_home)
     dt = model.opt.timestep; t = 0.0; n = 0
     horizon_ticks = ticks if ticks is not None else int(ctrl.ref.duration / dt)
-    age_fn = getattr(transport, "state_age", lambda: 0.0)
     for i in range(horizon_ticks):
         ls = transport.read_lowstate()
         cmd, diag = ctrl.step_track_estimated(ls, t)
-        raw = LowCmd(q_des=cmd.q_des, qd_des=cmd.qd_des, kp=cmd.kp, kd=cmd.kd, tau_ff=cmd.tau_ff)
-        safe = safety.wrap(raw, ok=diag["ok"], t=t, lowstate_age=age_fn())
+        safe = safety.wrap(cmd, ok=diag["ok"], t=t, lowstate_age=transport.state_age())
         transport.write_lowcmd(safe); n += 1; t += dt
     return n
 
@@ -192,9 +174,9 @@ def main():
     if args.mode == "balance":
         print(run_balance(cfg, args.seconds or 3.0))
     elif args.mode == "track-est":
-        print(run_track_estimated(cfg, args.seconds, log=args.log))
+        print(run_track_estimated(cfg, args.seconds))
     elif args.mode == "track-est-safe":
-        print(run_track_estimated_safe(cfg, args.seconds, log=args.log))
+        print(run_track_estimated_safe(cfg, args.seconds))
     elif args.mode == "hw":
         run_hw(cfg)
     else:

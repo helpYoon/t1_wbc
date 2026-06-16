@@ -1,11 +1,12 @@
 """Per-tick whole-body controller: settle, then balance/track -> JointCommand.
-Backend-agnostic: produces JointCommands; run.py applies them via an ActionBackend.
+Backend-agnostic: produces JointCommands; run.py applies them via MuJoCoBackend/transport.
 B=1 CPU path (CpuDynamics + chosen solver backend); settle stays single-MjData."""
 import numpy as np, mujoco
 from .model import build_index_maps, load_t1_model
 from .dynamics import CpuDynamics
 from .wbc_qp import assemble_wbc_qp, recover_tau
 from .solver import make_solver
+from .config import effective_ctrlrange
 from .action_backend import JointCommand
 from .targets import balance_targets, tracking_targets_from_refsample
 
@@ -18,10 +19,10 @@ class WBController:
         self.est = None
         self._est_data = mujoco.MjData(model)
         self.solver = make_solver(cfg)
-        cr = np.asarray(model.actuator_ctrlrange, dtype=np.float64) * cfg.torque_limit_scale
-        cr[:, 1] = cr[:, 1] - cfg.tau_pd_margin
-        cr[:, 0] = cr[:, 0] + cfg.tau_pd_margin
-        self.ctrlrange = cr
+        self.ctrlrange = effective_ctrlrange(model, cfg, reserve_margin=True)
+        self._t_est = 0.0
+        self._servo_kp = np.full(self.nu, cfg.servo_kp)   # constant in the JointCommand (0 in sim;
+        self._servo_kd = np.full(self.nu, cfg.servo_kd)   # SafetyLayer overrides on hardware)
         self.q_home = None; self.com_target = None; self._last = None; self.ref = None
 
     def attach_reference(self, ref):
@@ -34,7 +35,7 @@ class WBController:
     def _assemble_est_dynamics(self, lowstate, base_twist=None):
         """Estimator + measured joints -> a forwarded MjData -> extract (unchanged)."""
         ls = lowstate
-        t = getattr(self, "_t_est", 0.0)
+        t = self._t_est
         self.est.update_imu(ls.imu_rpy, ls.imu_gyro, ls.imu_acc, t)
         self.est.update_odometer(ls.odom_xytheta[0], ls.odom_xytheta[1], ls.odom_xytheta[2], t)
         self.est.update_base_pose_and_contacts(ls.joint_q)
@@ -77,9 +78,8 @@ class WBController:
         vdot_a = z[d["actuated_dof"]]
         qd_des = qd_act + vdot_a*self.dt
         q_des = q_act + qd_act*self.dt + 0.5*vdot_a*self.dt**2
-        servo = lambda v: np.full(self.nu, v)
         cmd = JointCommand(q_des=q_des, qd_des=qd_des,
-                           kp=servo(self.cfg.servo_kp), kd=servo(self.cfg.servo_kd), tau_ff=tau_ff)
+                           kp=self._servo_kp, kd=self._servo_kd, tau_ff=tau_ff)
         self._last = cmd
         return cmd, z, ok, tau_ff
 

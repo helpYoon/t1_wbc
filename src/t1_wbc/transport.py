@@ -17,9 +17,10 @@ class LowState:
     odom_xytheta: np.ndarray # (3,) planar x,y,theta
 
 
-@dataclass
-class LowCmd:
-    q_des: np.ndarray; qd_des: np.ndarray; kp: np.ndarray; kd: np.ndarray; tau_ff: np.ndarray  # (nu,)
+# A LowCmd is structurally identical to the WBC's JointCommand (q_des, qd_des, kp, kd,
+# tau_ff in MuJoCo actuator order) — alias it so the controller output flows straight to
+# the transport with no rebuild.
+from .action_backend import JointCommand as LowCmd
 
 
 class Transport(ABC):
@@ -27,6 +28,9 @@ class Transport(ABC):
     def read_lowstate(self) -> LowState: ...
     @abstractmethod
     def write_lowcmd(self, cmd: LowCmd) -> None: ...
+    def state_age(self) -> float:
+        """Seconds since the last LowState was received (0.0 when synthesized in sim)."""
+        return 0.0
 
 
 class SimTransport(Transport):
@@ -59,5 +63,4 @@ class SimTransport(Transport):
     def write_lowcmd(self, cmd: LowCmd) -> None:
         d = self.data; nu = self.nu
         q = d.qpos[7:7 + nu]; dq = d.qvel[6:6 + nu]
-        tau = cmd.kp * (cmd.q_des - q) + cmd.kd * (cmd.qd_des - dq) + cmd.tau_ff
-        d.ctrl[:] = np.clip(tau, self.lo, self.hi)
+        d.ctrl[:] = np.clip(cmd.torque(q, dq), self.lo, self.hi)

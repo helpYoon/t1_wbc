@@ -56,6 +56,18 @@ class WBCConfig:
     upright_z: float = 0.5          # base-height threshold for the "upright" summary flag
 
 
+def effective_ctrlrange(model, cfg, reserve_margin=False):
+    """Per-actuator torque [lo, hi] after the conservative `torque_limit_scale`.
+    With `reserve_margin`, also pull each bound in by `tau_pd_margin` to leave headroom
+    for the firmware PD (the in-QP torque bound uses this; the SafetyLayer clamps to the
+    unmargined scaled range)."""
+    cr = np.asarray(model.actuator_ctrlrange, dtype=np.float64) * cfg.torque_limit_scale
+    if reserve_margin:
+        cr[:, 0] = cr[:, 0] + cfg.tau_pd_margin
+        cr[:, 1] = cr[:, 1] - cfg.tau_pd_margin
+    return cr
+
+
 _SERVO_GROUPS = {  # (kp, kd) by joint group, from the T1 task.info joint_pd_gains schedule
     "head_arm": (20.0, 0.5), "waist_hip_knee": (200.0, 5.0), "ankle": (50.0, 3.0),
 }
