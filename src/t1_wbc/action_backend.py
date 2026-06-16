@@ -1,16 +1,16 @@
 """Backend-agnostic joint command + action backends (MuJoCo now; Booster SDK later)."""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import numpy as np, torch
+import numpy as np
 
 
 @dataclass
 class JointCommand:
-    """Per-actuated-joint command, batched (B,nu) tensors in MuJoCo actuator order.
+    """Per-actuated-joint command, numpy (nu,) arrays in MuJoCo actuator order.
     Effective law (both sim and Booster kCustom): tau = kp(q_des-q)+kd(qd_des-qd)+tau_ff."""
-    q_des: torch.Tensor; qd_des: torch.Tensor   # (B,nu)
-    kp: torch.Tensor; kd: torch.Tensor
-    tau_ff: torch.Tensor
+    q_des: np.ndarray; qd_des: np.ndarray
+    kp: np.ndarray; kd: np.ndarray
+    tau_ff: np.ndarray
 
 
 class ActionBackend(ABC):
@@ -27,9 +27,8 @@ class MuJoCoBackend(ActionBackend):
 
     def apply(self, cmd, data):
         nu = self.model.nu
-        q = torch.as_tensor(data.qpos[7:7+nu], dtype=cmd.q_des.dtype)
-        qd = torch.as_tensor(data.qvel[6:6+nu], dtype=cmd.q_des.dtype)
-        tau = (cmd.kp*(cmd.q_des - q) + cmd.kd*(cmd.qd_des - qd) + cmd.tau_ff)[0].cpu().numpy()
+        q = data.qpos[7:7+nu]; qd = data.qvel[6:6+nu]
+        tau = cmd.kp*(cmd.q_des - q) + cmd.kd*(cmd.qd_des - qd) + cmd.tau_ff
         data.ctrl[:] = np.clip(tau, self.lo, self.hi)
 
 

@@ -139,11 +139,8 @@ class ReferenceTrajectory:
     """Anchored, dedup'd, time-scaled reference with per-frame CoM (FK on a scratch MjData)."""
 
     def __init__(self, model, index_maps, q_home, cfg, x0=0.0, y0=0.0, yaw0=0.0):
-        # q_home may arrive as a torch (1,nu) tensor (WBController.q_home) or a
-        # numpy (nu,) array; frame_to_qref needs a numpy (nu,) array it can .copy()
-        # and index by joint, so coerce here.
-        if hasattr(q_home, "detach"):
-            q_home = q_home.detach().cpu().numpy()
+        # q_home arrives as a numpy (nu,) array (WBController.q_home); frame_to_qref
+        # needs a numpy (nu,) array it can .copy() and index by joint, so coerce here.
         q_home = np.asarray(q_home, dtype=np.float64).reshape(-1)
         self.model = model; self.maps = index_maps; self.q_home = q_home; self.cfg = cfg
         self._scratch = mujoco.MjData(model)
