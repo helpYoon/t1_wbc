@@ -79,6 +79,36 @@ class StateEstimator:
         self._contacts = np.array([zl < self.contact_threshold_m,
                                    zr < self.contact_threshold_m])
 
+    def update_odometer(self, x, y, theta, t):
+        t = float(t)
+        if self._xy0 is None:
+            self._xy0 = np.array([float(x), float(y)])
+        # rotate (odom - xy0) into the yaw-zeroed frame (use IMU yaw0; 0 if no IMU yet)
+        yaw0 = self._yaw0 if self._yaw0 is not None else 0.0
+        c, s = np.cos(-yaw0), np.sin(-yaw0)
+        dx, dy = float(x) - self._xy0[0], float(y) - self._xy0[1]
+        xy_world = np.array([c * dx - s * dy, s * dx + c * dy])
+        self._pos[0], self._pos[1] = xy_world[0], xy_world[1]
+        # complementary filter: high-pass IMU integration + low-pass odometer finite-diff
+        g = np.array([0.0, 0.0, -9.81])
+        Rwb = R.from_quat(self._quat_xyzw).as_matrix()          # body->world
+        a_world = Rwb @ self._acc + g                           # acc includes gravity reaction
+        v_odom = np.zeros(3)
+        if self._t_odom is not None and t > self._t_odom:
+            dt = t - self._t_odom
+            v_odom[:2] = (xy_world - self._xy_world_prev) / dt
+            alpha = self.comp_tau_s / (self.comp_tau_s + dt)
+            v_world = alpha * (self._lin_vel_world() + a_world * dt) + (1.0 - alpha) * v_odom
+            self._lin_vel = Rwb.T @ v_world                     # store body-frame (getLinearVelocityLocal)
+        self._t_odom = t
+        self._xy_world_prev = xy_world.copy()
+
+    def _lin_vel_world(self):
+        return R.from_quat(self._quat_xyzw).as_matrix() @ self._lin_vel
+
+    def lin_vel(self):
+        return self._lin_vel.copy()
+
     def position(self):
         return self._pos.copy()
 
