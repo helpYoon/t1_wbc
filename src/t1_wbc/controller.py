@@ -15,6 +15,8 @@ class WBController:
         self.model = model; self.cfg = cfg; self.nu = model.nu; self.nv = model.nv; self.dt = model.opt.timestep
         self.maps = build_index_maps(model)
         self.dyn = CpuDynamics(model, self.maps)
+        self.est = None
+        self._est_data = mujoco.MjData(model)
         self.solver = make_solver(cfg)
         self.ctrlrange = np.asarray(model.actuator_ctrlrange, dtype=np.float64)
         self.q_home = None; self.com_target = None; self._last = None; self.ref = None
@@ -22,6 +24,29 @@ class WBController:
     def attach_reference(self, ref):
         """Provide a ReferenceTrajectory for step_track."""
         self.ref = ref
+
+    def attach_estimator(self, est):
+        self.est = est
+
+    def _assemble_est_dynamics(self, lowstate, base_twist=None):
+        """Estimator + measured joints -> a forwarded MjData -> extract (unchanged)."""
+        ls = lowstate
+        t = getattr(self, "_t_est", 0.0)
+        self.est.update_imu(ls.imu_rpy, ls.imu_gyro, ls.imu_acc, t)
+        self.est.update_odometer(ls.odom_xytheta[0], ls.odom_xytheta[1], ls.odom_xytheta[2], t)
+        self.est.update_base_pose_and_contacts(ls.joint_q)
+        d = self._est_data
+        q = self.est.quat_xyzw()
+        d.qpos[0:3] = self.est.position()
+        d.qpos[3:7] = [q[3], q[0], q[1], q[2]]                  # xyzw -> wxyz
+        d.qpos[7:7 + self.nu] = ls.joint_q
+        if base_twist is not None:
+            d.qvel[0:6] = base_twist
+        else:
+            d.qvel[0:3] = self.est.lin_vel(); d.qvel[3:6] = self.est.ang_vel()
+        d.qvel[6:6 + self.nu] = ls.joint_dq
+        mujoco.mj_forward(self.model, d)
+        return self.dyn.extract(d)
 
     def reset(self, data):
         mujoco.mj_resetDataKeyframe(self.model, data, 0)
