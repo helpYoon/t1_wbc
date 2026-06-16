@@ -63,3 +63,13 @@ def test_wrong_joint_count_fails_fast():
     bad = _mocks(); bad["joint_cnt"] = 23
     with pytest.raises(AssertionError):
         SdkTransport(model, maps, _sdk=bad)
+
+def test_run_hw_loop_with_mock_transport_writes_commands():
+    from t1_wbc.run import run_hw_loop
+    from t1_wbc.config import WBCConfig
+    model, data = load_t1_model(); maps = build_index_maps(model)
+    tr = SdkTransport(model, maps, _sdk=_mocks())
+    tr._on_state(_LowStateMsg(29)); tr._on_odom(_OdomMsg())   # seed a state for read_lowstate
+    n_written = run_hw_loop(WBCConfig(), model, data, maps, tr, ticks=5)
+    assert n_written == 5
+    assert len(tr._sdk["low_cmd_pub"].written) == 5

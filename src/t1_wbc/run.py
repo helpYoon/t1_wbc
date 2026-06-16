@@ -132,9 +132,48 @@ def run_track_estimated_safe(cfg, seconds=None, log=None):
                 lh_rms=float(np.mean(lh)), rh_rms=float(np.mean(rh)))
 
 
+def run_hw_loop(cfg, model, data, maps, transport, ticks=None):
+    """The hardware control loop: read LowState -> estimate+WBC -> SafetyLayer -> write LowCmd.
+    Transport-agnostic (real SdkTransport on robot; mock in tests). Returns commands written.
+    `data` is only used to settle / seed q_home."""
+    from .estimator import StateEstimator
+    from .safety import SafetyLayer
+    from .transport import LowCmd
+    ctrl = WBController(model, cfg); ctrl.reset(data); ctrl.settle(data)
+    ctrl.attach_reference(ReferenceTrajectory(model, maps, ctrl.q_home, cfg, 0.0, 0.0, 0.0))
+    ctrl.attach_estimator(StateEstimator(model, maps))
+    safety = SafetyLayer(model, cfg, maps); safety.begin(ctrl.q_home)
+    dt = model.opt.timestep; t = 0.0; n = 0
+    horizon_ticks = ticks if ticks is not None else int(ctrl.ref.duration / dt)
+    age_fn = getattr(transport, "state_age", lambda: 0.0)
+    for i in range(horizon_ticks):
+        ls = transport.read_lowstate()
+        cmd, diag = ctrl.step_track_estimated(ls, t)
+        raw = LowCmd(q_des=cmd.q_des, qd_des=cmd.qd_des, kp=cmd.kp, kd=cmd.kd, tau_ff=cmd.tau_ff)
+        safe = safety.wrap(raw, ok=diag["ok"], t=t, lowstate_age=age_fn())
+        transport.write_lowcmd(safe); n += 1; t += dt
+    return n
+
+
+def run_hw(cfg):
+    """REAL on-robot entry. Requires the Booster SDK + a connected T1. Builds an SdkTransport,
+    runs the kPrepare->kCustom handshake, then the hw loop; on exit, falls back to kDamping."""
+    from .sdk_transport import SdkTransport
+    import time as _t
+    model, data = load_t1_model(cfg.xml)
+    maps = build_index_maps(model)
+    tr = SdkTransport(model, maps)        # lazy-imports the SDK
+    _t.sleep(0.2)                          # let the first LowState callback arrive
+    tr.start()
+    try:
+        run_hw_loop(cfg, model, data, maps, tr)
+    finally:
+        tr.stop()
+
+
 def main():
     p = argparse.ArgumentParser(description="T1 whole-body QP controller")
-    p.add_argument("--mode", choices=["balance", "track", "track-est", "track-est-safe"], default="track")
+    p.add_argument("--mode", choices=["balance", "track", "track-est", "track-est-safe", "hw"], default="track")
     p.add_argument("--seconds", type=float, default=None)
     p.add_argument("--time-scale", type=float, default=None)
     p.add_argument("--control-decimation", type=int, default=None)
@@ -156,6 +195,8 @@ def main():
         print(run_track_estimated(cfg, args.seconds, log=args.log))
     elif args.mode == "track-est-safe":
         print(run_track_estimated_safe(cfg, args.seconds, log=args.log))
+    elif args.mode == "hw":
+        run_hw(cfg)
     else:
         print(run_track(cfg, args.seconds, viewer=args.viewer, log=args.log))
 
