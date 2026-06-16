@@ -12,65 +12,6 @@ def load_t1_model(xml=T1_XML):
     return model, mujoco.MjData(model)
 
 
-# mujoco_warp sizes the per-world contact/constraint buffers from a model-only
-# heuristic (T1: nconmax=48, njmax=64). The T1 double stance is 8 box-corner
-# contacts (condim 3 -> 24 contact rows) + 29 joint friction-loss rows, so per-world
-# ``nefc`` sits right at the default njmax=64 and, under per-env perturbation /
-# dynamic balance, transiently spikes to ~78. When ``nefc > njmax`` mujoco_warp
-# prints ``nefc overflow - please increase njmax`` and silently drops the overflow
-# constraints (and the underlying contacts), which corrupts large-B (>=256) runs.
-# Size both buffers explicitly with headroom (next valid bucket above the spike).
-T1_NCONMAX = 64        # contacts/world: covers the 8 double-stance corners + margin
-T1_NJMAX = 128         # constraints/world: covers ~63 steady nefc + perturbation spikes
-
-
-def load_t1_warp_model(num_envs, xml=T1_XML):
-    """Load the Booster T1 as a batched mjwarp model/data (B=num_envs).
-
-    Forces dense qM (``mjJAC_DENSE`` BEFORE ``put_model`` -> ``wm.is_sparse`` False),
-    so the QP can slice the padded ``qM`` to ``nv`` and ``mjw.jac`` runs dense.
-    Sizes the contact/constraint buffers (``nconmax``/``njmax``) above the T1's
-    double-stance ``nefc`` so large-B perturbed balance runs do not overflow and drop
-    contacts. Returns ``(m, wm, wd, handles)``; every ``wp.array``/``wp.from_torch``
-    in the batched dynamics must route through ``handles["wp_device"]``.
-    """
-    import mujoco_warp as mjw
-
-    m = mujoco.MjModel.from_xml_path(xml)
-    m.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE        # BEFORE put_model
-    wm = mjw.put_model(m)
-    assert wm.is_sparse is False                           # is_sparse lives on wm
-    wd = mjw.put_data(m, mujoco.MjData(m), nworld=num_envs,
-                      nconmax=T1_NCONMAX, njmax=T1_NJMAX)
-    handles = build_warp_handles(m, num_envs, str(wd.qpos.device))
-    return m, wm, wd, handles
-
-
-def build_warp_handles(m, num_envs, wp_device):
-    """Model-derived dynamics handles for ``WarpDynamics`` (engine-agnostic).
-
-    Everything here is a pure function of the ``MjModel`` plus the warp device and the
-    batch size. Both the standalone-Warp path (``load_t1_warp_model``) and the mjlab
-    path (``build_mjlab_sim`` in controller.py) share this so the dynamics extraction
-    is identical regardless of who owns the sim/stepping.
-    """
-    maps = build_index_maps(m)
-    feet = maps["feet"]
-    bid = lambda nm: mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, nm)
-    return dict(
-        nv=m.nv, nbody=m.nbody, nworld=num_envs,
-        wp_device=str(wp_device),
-        base_body=maps["base_body_id"],
-        foot_L=feet["left"]["body_id"], foot_R=feet["right"]["body_id"],
-        hand_L=bid("left_hand_link"), hand_R=bid("right_hand_link"),
-        sole_local=feet["left"]["sole_local"].copy(),
-        x_half=feet["left"]["x_half"], y_half=feet["left"]["y_half"],
-        body_mass=m.body_mass.copy(), total_mass=float(m.body_mass.sum()),
-        actuated_dof=np.array([j["dofadr"] for j in maps["actuated_joints"]], dtype=int),
-        ctrlrange=m.actuator_ctrlrange.copy(), dof_frictionloss=m.dof_frictionloss.copy(),
-    )
-
-
 def build_index_maps(model):
     """Resolve joint/actuator/foot/hand/base handles for the T1 model as a dict."""
     n = lambda t, i: (mujoco.mj_id2name(model, t, i) or f"<unnamed#{i}>")

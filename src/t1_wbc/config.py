@@ -49,14 +49,3 @@ class WBCConfig:
     settle_kp: float = 60.0         # PD-hold settle gains (shared by B=1 and batched paths)
     settle_kd: float = 6.0
     upright_z: float = 0.5          # base-height threshold for the "upright" summary flag
-    # --- batched / solver ---
-    backend: str = "admm"          # "admm" (default, all B) | "proxsuite" (B=1 exact)
-    device: str = "cpu"            # "cpu" for B=1; "cuda" for batched
-    dtype: str = "float64"         # solve dtype; warp dynamics (f32) cast to this for the QP
-    num_envs: int = 1
-    admm_max_iter: int = 4000
-    admm_rho: float = 1.0
-    admm_rho_eq: float = 100.0     # cap <= 1e3 in float32
-    admm_eps_abs: float = 1e-8
-    admm_eps_rel: float = 1e-8
-    admm_feas_tol: float = 1e-4    # external-residual feasibility threshold
