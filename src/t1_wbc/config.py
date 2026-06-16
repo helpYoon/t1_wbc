@@ -42,6 +42,11 @@ class WBCConfig:
     # joint-servo gains in the JointCommand (0 in sim = pure ID; nonzero on hardware)
     servo_kp: float = 0.0
     servo_kd: float = 0.0
+    torque_limit_scale: float = 1.0   # (0,1]; reduce for conservative on-robot bring-up
+    tau_pd_margin: float = 0.0        # Nm headroom reserved for the firmware PD on top of tau_ff
+    tau_slew_max: float = 80.0        # max |delta tau| per control tick (Nm)
+    ramp_seconds: float = 2.0         # weight-ramp blend hold-pose -> WBC
+    watchdog_timeout_s: float = 0.05  # LowState staleness -> safe hold
     # timing
     time_scale: float = 5.0
     control_decimation: int = 1     # solve QP every k physics steps
@@ -49,3 +54,22 @@ class WBCConfig:
     settle_kp: float = 60.0         # PD-hold settle gains (shared by B=1 and batched paths)
     settle_kd: float = 6.0
     upright_z: float = 0.5          # base-height threshold for the "upright" summary flag
+
+
+_SERVO_GROUPS = {  # (kp, kd) by joint group, from the T1 task.info joint_pd_gains schedule
+    "head_arm": (20.0, 0.5), "waist_hip_knee": (200.0, 5.0), "ankle": (50.0, 3.0),
+}
+def servo_gains_for(index_maps):
+    """Per-MuJoCo-joint (kp, kd) from the T1 task.info joint_pd_gains schedule."""
+    n2i = index_maps["name_to_act_index"]
+    nu = len(n2i)
+    kp = np.zeros(nu); kd = np.zeros(nu)
+    for name, i in n2i.items():
+        if "Ankle" in name:
+            g = _SERVO_GROUPS["ankle"]
+        elif ("Hip" in name) or ("Knee" in name) or (name == "Waist"):
+            g = _SERVO_GROUPS["waist_hip_knee"]
+        else:                                  # head + all arm joints
+            g = _SERVO_GROUPS["head_arm"]
+        kp[i], kd[i] = g
+    return kp, kd

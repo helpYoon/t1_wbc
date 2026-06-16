@@ -18,7 +18,10 @@ class WBController:
         self.est = None
         self._est_data = mujoco.MjData(model)
         self.solver = make_solver(cfg)
-        self.ctrlrange = np.asarray(model.actuator_ctrlrange, dtype=np.float64)
+        cr = np.asarray(model.actuator_ctrlrange, dtype=np.float64) * cfg.torque_limit_scale
+        cr[:, 1] = cr[:, 1] - cfg.tau_pd_margin
+        cr[:, 0] = cr[:, 0] + cfg.tau_pd_margin
+        self.ctrlrange = cr
         self.q_home = None; self.com_target = None; self._last = None; self.ref = None
 
     def attach_reference(self, ref):
