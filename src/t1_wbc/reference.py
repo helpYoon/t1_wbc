@@ -41,13 +41,22 @@ class MotionSegment:
     left_hand_omega: np.ndarray; right_hand_omega: np.ndarray
 
 
-def load_motion(path=PKL):
+def load_motion(path=PKL, segments=None):
+    """Load motion segments from `path`. If `segments` is an iterable of indices,
+    return only those segments, in the given order (validated against the count)."""
     raw = _load_raw(path)
     if not isinstance(raw, dict) or "segments" not in raw:
         raise ValueError(f"{path}: no 'segments' key")
+    raw_segs = raw["segments"]
+    if segments is not None:
+        n = len(raw_segs)
+        for i in segments:
+            if not (0 <= i < n):
+                raise IndexError(f"segment index {i} out of range [0,{n}) in {path}")
+        raw_segs = [raw_segs[i] for i in segments]
     f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)
     segs = []
-    for rs in raw["segments"]:
+    for rs in raw_segs:
         pos = rs["position"]; vel = rs.get("velocity", {}) or {}
         T = int(rs["T"]); dt = float(rs["dt"])
         hip = f64(pos.get("trunk_pitch", np.zeros(T)))       # NO negation -> both Hip_Pitch
@@ -144,7 +153,7 @@ class ReferenceTrajectory:
         q_home = np.asarray(q_home, dtype=np.float64).reshape(-1)
         self.model = model; self.maps = index_maps; self.q_home = q_home; self.cfg = cfg
         self._scratch = mujoco.MjData(model)
-        segs = load_motion(cfg.motion)
+        segs = load_motion(cfg.motion, getattr(cfg, "segments", None))
         # global time axis from per-segment dt, with seam dedup applied to EVERY stream
         times, frames, segref, kref = [], [], [], []
         t = 0.0

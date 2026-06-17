@@ -13,6 +13,7 @@ class WBCConfig:
     # paths
     xml: str = T1_XML
     motion: str = PKL
+    segments: tuple | None = None   # None = full motion; else iterable of segment indices to track
     # contact / friction
     mu: float = 0.6
     fz_min: float = 0.0
@@ -25,16 +26,20 @@ class WBCConfig:
     # joint task (posture = untracked-at-home; tracking weight bumps tracked joints)
     kp_post: float = 120.0
     kd_post: float = 12.0
-    w_post: float = 1.0             # weight for untracked (held) joints
+    w_post: float = 20.0            # hold weight for untracked joints (incl. the lateral
+                                    # balance joints hip_roll/ankle_roll); was 1.0 -> they
+                                    # gave up and the robot rolled. Now held as firmly as the
+                                    # tracked joints (mirrors MPC holding Hip_Roll >= Hip_Pitch).
     w_track_joint: float = 20.0     # weight for tracked joints (Phase 3)
     # hand task (Phase 3)
     kp_hand: float = 100.0
     kd_hand: float = 20.0
     w_hand: float = 10.0
-    # base orientation task (Phase 3)
+    # base orientation task — PRIMARY balance term, mirroring t1_controller MPC's trunk
+    # pitch/roll cost (Q=20, equal pitch+roll). Was 5 (far too weak -> robot rolled over).
     kp_base_ori: float = 60.0
     kd_base_ori: float = 12.0
-    w_base_ori: float = 5.0
+    w_base_ori: float = 50.0
     # regularization
     reg_vdot: float = 1e-3
     reg_W: float = 1e-5
@@ -50,6 +55,8 @@ class WBCConfig:
     # timing
     time_scale: float = 5.0
     control_decimation: int = 1     # solve QP every k physics steps
+    control_period: float = 0.02    # WBC solve cadence (s); 0.02 = 50Hz, matches SDK example
+    publish_period: float = 0.005   # LowCmd stream cadence (s); 0.005 = 200Hz, decoupled from solve
     settle_seconds: float = 0.5
     settle_kp: float = 60.0         # PD-hold settle gains (shared by B=1 and batched paths)
     settle_kd: float = 6.0
