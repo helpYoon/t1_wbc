@@ -1,17 +1,54 @@
 import numpy as np
 from t1_wbc.model import load_t1_model, build_index_maps
-from t1_wbc.config import WBCConfig, servo_gains_for
+from t1_wbc.config import WBCConfig, servo_gains_for, _SERVO_GROUPS
 from t1_wbc.controller import WBController
 from t1_wbc.safety import clamp_torque, slew_limit
 
+def _expected_group(name):
+    """Mirror of servo_gains_for's routing — the structural contract under test."""
+    if "Head" in name:
+        return "head"
+    if "Ankle" in name:
+        return "ankle"
+    if ("Hip" in name) or ("Knee" in name) or (name == "Waist"):
+        return "trunk_leg"
+    return "arm"
+
 def test_servo_gains_table_per_group():
+    # Guards the ROUTING (each joint -> correct group) against _SERVO_GROUPS as the single source
+    # of truth, NOT hardcoded numbers — the kd values are tuned live on hardware. Legs/waist track
+    # holosoma_walk.yaml `common`; arm/head track tiago_scripts.
     model, _ = load_t1_model()
     maps = build_index_maps(model)
     kp, kd = servo_gains_for(maps)            # (nu,), (nu,)
     n2i = maps["name_to_act_index"]
-    assert kp[n2i["Left_Shoulder_Pitch"]] == 20.0 and kd[n2i["Left_Shoulder_Pitch"]] == 0.5
-    assert kp[n2i["Left_Hip_Pitch"]] == 200.0 and kd[n2i["Left_Hip_Pitch"]] == 5.0
-    assert kp[n2i["Left_Ankle_Pitch"]] == 50.0 and kd[n2i["Left_Ankle_Pitch"]] == 3.0
+    for name, i in n2i.items():
+        gkp, gkd = _SERVO_GROUPS[_expected_group(name)]
+        assert kp[i] == gkp and kd[i] == gkd, f"{name} routed to wrong group"
+    # Structural identity that must not regress: stiff legs/waist, softer ankle, distinct arm/head,
+    # all damping strictly positive.
+    assert kp[n2i["Left_Hip_Pitch"]] == kp[n2i["Waist"]] == 200.0
+    assert kp[n2i["Left_Ankle_Pitch"]] == 50.0
+    assert kp[n2i["Left_Shoulder_Pitch"]] == 55.0
+    assert kp[n2i["Head_pitch"]] == 150.0
+    assert (kd > 0).all()
+
+def test_tau_ff_scale_zero_gives_pure_position_pd():
+    # tau_ff_scale=0 must zero the feedforward in SafetyLayer.wrap (pure position-PD, the
+    # RL-deploy mode) while leaving q_des/kp/kd intact.
+    from t1_wbc.safety import SafetyLayer
+    from t1_wbc.action_backend import JointCommand
+    model, _ = load_t1_model()
+    maps = build_index_maps(model)
+    cfg = WBCConfig(tau_ff_scale=0.0, ramp_seconds=0.0)
+    sl = SafetyLayer(model, cfg, maps); sl.begin(np.zeros(model.nu))
+    raw = JointCommand(q_des=np.full(model.nu, 0.1), qd_des=np.zeros(model.nu),
+                       kp=np.zeros(model.nu), kd=np.zeros(model.nu),
+                       tau_ff=np.full(model.nu, 5.0))
+    out = sl.wrap(raw, ok=True, t=1.0, lowstate_age=0.0)
+    np.testing.assert_allclose(out.tau_ff, 0.0)                       # feedforward zeroed
+    np.testing.assert_allclose(out.q_des, 0.1)                        # position command intact
+    assert (out.kp[maps["name_to_act_index"]["Left_Hip_Pitch"]]) == 200.0  # PD gains intact
 
 def test_torque_limit_scale_tightens_qp_ctrlrange():
     model, data = load_t1_model()

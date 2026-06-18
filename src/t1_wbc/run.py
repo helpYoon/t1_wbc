@@ -348,6 +348,16 @@ def _parser():
                    help="torque_limit_scale in (0,1]; reduce for conservative on-robot bring-up")
     p.add_argument("--control-period", type=float, default=None,
                    help="hardware loop cadence in seconds (default 0.02 = 50Hz)")
+    p.add_argument("--vel-filter-alpha", type=float, default=None,
+                   help="EMA factor for measured joint velocity into the QP (1.0=off; lower=smoother)")
+    p.add_argument("--base-vel-filter-alpha", type=float, default=None,
+                   help="EMA factor for the estimator base twist into the QP (1.0=off; lower=smoother)")
+    p.add_argument("--kd-com", type=float, default=None,
+                   help="CoM-task velocity-damping gain (default 18; lower reduces velocity-noise into leg tau_ff)")
+    p.add_argument("--tau-slew-max", type=float, default=None,
+                   help="max |delta tau_ff| per control tick, Nm (default 80; lower rate-limits tau_ff chatter)")
+    p.add_argument("--tau-ff-scale", type=float, default=None,
+                   help="scale on WBC feedforward torque (1=full; 0=pure position-PD, the RL-deploy mode — diagnostic)")
     return p
 
 
@@ -365,6 +375,16 @@ def _build_cfg(args):
         cfg.torque_limit_scale = args.torque_scale
     if args.control_period is not None:
         cfg.control_period = args.control_period
+    if args.vel_filter_alpha is not None:
+        cfg.vel_filter_alpha = args.vel_filter_alpha
+    if args.base_vel_filter_alpha is not None:
+        cfg.base_vel_filter_alpha = args.base_vel_filter_alpha
+    if args.kd_com is not None:
+        cfg.kd_com = args.kd_com
+    if args.tau_slew_max is not None:
+        cfg.tau_slew_max = args.tau_slew_max
+    if args.tau_ff_scale is not None:
+        cfg.tau_ff_scale = args.tau_ff_scale
     if args.no_friction_ff:
         cfg.friction_ff = False  # disable the Coulomb friction feedforward term
     return cfg

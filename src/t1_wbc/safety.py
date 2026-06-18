@@ -40,7 +40,7 @@ class SafetyLayer:
             alpha = min(1.0, (t - self._t0) / max(self.cfg.ramp_seconds, 1e-9))  # weight ramp
             q_des = (1 - alpha) * self._hold_q + alpha * raw.q_des
             qd_des = alpha * raw.qd_des
-            tau_ff = alpha * raw.tau_ff
+            tau_ff = alpha * raw.tau_ff * self.cfg.tau_ff_scale   # scale=0 -> pure position-PD
         tau_ff = clamp_torque(tau_ff, self.tau_lo, self.tau_hi)
         tau_ff = slew_limit(tau_ff, self._prev_tau, self.cfg.tau_slew_max)
         self._prev_tau = tau_ff.copy()
